@@ -9,19 +9,17 @@ const int ledD7 = D7;
    wak[eInterval]: how long the particle goes to sleep for; range: 5 to 600 seconds
    dur[ation]: how long the particle blinks the LED; range: 5 to 60 seconds
    rat[e]: the number of blinks per secong; range: 2 to 9
-
 */
 
+const char * DESIRED_STATE_ID_ARRAY[] = {"blink", "wakeInterval", "duration", "rate"};
+const int  CONFIGURED_INTEGER_PARAMETER_MIN[] = {0, 5, 2, 1};
+const int  CONFIGURED_INTEGER_PARAMETER_MAX[] = {1, 600, 30, 9};
 const unsigned int BLINK_OFFSET = 0;
 const unsigned int WAKEINTERVAL_OFFSET = 1;
 const unsigned int DURATION_OFFSET = 2;
 const unsigned int RATE_OFFSET = 3;
 
-const char * DESIRED_STATE_ID_ARRAY[] = {"blink", "wakeInterval", "duration", "rate"};
-const int  CONFIGURED_INTEGER_PARAMETER_MIN[] = {0, 5, 2, 1};
-const int  CONFIGURED_INTEGER_PARAMETER_MAX[] = {1, 600, 30, 9};
-
-const char * FUNCTION_NAME = "desired";
+const char * FUNCTION_NAME = "desired";  //advertised function name
 const char * FUNCTION_ADVERTISEMENT = "function";
 
 bool received_desired_state = FALSE;
@@ -45,8 +43,7 @@ const unsigned int WAIT_FOR_AWS_IOT_POLL_INTERVAL = 500; //milliseconds between 
 int wait_count = 0;
 const unsigned int WAIT_FOR_PARTICLE_FLASH_COMMAND = 13000; //window to allow Over The Air updates
 
-
-STARTUP( early_setup() );
+STARTUP( early_setup() );  //STARTUP is an enhancement over Arduino's 'setup' allowing quicker initialization for some items.
 
 void early_setup() {
     pinMode(ledD7, OUTPUT);
@@ -63,7 +60,7 @@ void early_setup() {
 void setup() {
   Serial.begin(9600);   // open serial over USB
   Particle.function(FUNCTION_NAME, DesiredState);
-  Particle.publish(FUNCTION_ADVERTISEMENT, FUNCTION_NAME, 10, PRIVATE);
+  Particle.publish(FUNCTION_ADVERTISEMENT, FUNCTION_NAME, 10, PRIVATE); //the bridge on the server will use this name the state update function call
   delay(WAIT_FOR_PARTICLE_FLASH_COMMAND);
  }
 
@@ -99,6 +96,9 @@ void do_task() {
     }
 }
 
+// the following Particle function is called by the bridge server after it gets the desired state from AWS-IoT
+// Because particle function calls are limited to 63 characters, the bridge shortens the names to 3 characters,
+//   hence only the first 3 characters of the keys are compared.
 int DesiredState(String state) {
     int return_code = 0;
     char value[15];
@@ -123,6 +123,7 @@ int DesiredState(String state) {
             if (root.containsKey(short_key)) {
                 int valueInt = root[short_key].as<int>();
                 sprintf(value, "%s: %d", short_key, valueInt);
+                // check the value is within the min/max range for the configuration parameter:
                 if ((valueInt < CONFIGURED_INTEGER_PARAMETER_MIN[i]) || (valueInt > CONFIGURED_INTEGER_PARAMETER_MAX[i])) return_code = -i; //out of range
                 else persistent_state_cache.values[i] = valueInt;
             }
@@ -131,5 +132,5 @@ int DesiredState(String state) {
         if (return_code < 0) Particle.publish("DEBUG: illegal value in desiredState ", value, 10, PRIVATE);
         received_desired_state = TRUE;
     }
-    return return_code;
+    return return_code;  // if the return code is less than zero, it indicates which parameter was out of range
 }
