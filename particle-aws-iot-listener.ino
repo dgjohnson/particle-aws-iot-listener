@@ -3,12 +3,12 @@
 
 const int ledD7 = D7;
 /*
- The following are configuration parameters:
+ The following are configuration parameters.
  The names should match the first 3 characters of the 'desired' state in the AWS-IOT
    bli[nk]: 0/1; a transition from 0->1 or 1->0 results in the blue LED to blink
    wak[eInterval]: how long the particle goes to sleep for; range: 5 to 600 seconds
    dur[ation]: how long the particle blinks the LED; range: 5 to 60 seconds
-   rat[e]: the number of blinks per secong; range: 2 to 9
+   rat[e]: the number of blinks per second; range: 2 to 9
 */
 
 const char * DESIRED_STATE_ID_ARRAY[] = {"blink", "wakeInterval", "duration", "rate"};
@@ -23,11 +23,12 @@ const char * FUNCTION_NAME = "desired";  //advertised function name
 const char * FUNCTION_ADVERTISEMENT = "function";
 
 bool received_desired_state = FALSE;
+bool desired_state_change = FALSE;
+bool blink_state_change = FALSE;
 
 typedef struct _PERSISTENT_STATE_ {
-  int validity_constant;
-  int values[RATE_OFFSET+1];
-  int previous_blink_state;
+    int validity_constant;
+    int values[RATE_OFFSET+1];
 } PERSISTENT_STATE ;
 
 PERSISTENT_STATE persistent_state_cache;
@@ -50,37 +51,37 @@ void early_setup() {
     EEPROM.get(EEPROM_CONTENT_ADDRESS, persistent_state_cache);
     if(persistent_state_cache.validity_constant != EEPROM_VALID_INDICATOR) {
         for(unsigned int i = 0; i < (sizeof DESIRED_STATE_ID_ARRAY / sizeof *DESIRED_STATE_ID_ARRAY); i+=1) {
-          persistent_state_cache.values[i] = CONFIGURED_INTEGER_PARAMETER_MIN[i];
+            persistent_state_cache.values[i] = CONFIGURED_INTEGER_PARAMETER_MIN[i];
         }
-        persistent_state_cache.previous_blink_state = 0;
         persistent_state_cache.validity_constant = EEPROM_VALID_INDICATOR;
     }
 }
 
 void setup() {
-  Serial.begin(9600);   // open serial over USB
-  Particle.function(FUNCTION_NAME, DesiredState);
-  Particle.publish(FUNCTION_ADVERTISEMENT, FUNCTION_NAME, 10, PRIVATE); //the bridge on the server will use this name the state update function call
-  delay(WAIT_FOR_PARTICLE_FLASH_COMMAND);
- }
+    Serial.begin(9600);   // open serial over USB
+    Particle.function(FUNCTION_NAME, DesiredState);
+    Particle.publish(FUNCTION_ADVERTISEMENT, FUNCTION_NAME, 10, PRIVATE);
+    delay(WAIT_FOR_PARTICLE_FLASH_COMMAND);
+}
 
 void loop() {
     wait_count += 1;
     if (received_desired_state) {
-        if (persistent_state_cache.values[BLINK_OFFSET] != persistent_state_cache.previous_blink_state) do_task();
-        persistent_state_cache.previous_blink_state = persistent_state_cache.values[BLINK_OFFSET]; //update previous state to new state
-
-        // report state to AWS-IOT
-        JsonObject& root = jsonBuffer.createObject();
-        for(unsigned int i = 0; i < (sizeof DESIRED_STATE_ID_ARRAY / sizeof *DESIRED_STATE_ID_ARRAY); i+=1) {
-            root[DESIRED_STATE_ID_ARRAY[i]] = persistent_state_cache.values[i];
+        if (blink_state_change) do_task();
+        
+        if (desired_state_change) {
+            // report updated state to AWS-IOT & update persistent state
+            JsonObject& root = jsonBuffer.createObject();
+            for(unsigned int i = 0; i < (sizeof DESIRED_STATE_ID_ARRAY / sizeof *DESIRED_STATE_ID_ARRAY); i+=1) {
+                root[DESIRED_STATE_ID_ARRAY[i]] = persistent_state_cache.values[i];
+            }
+            root["exampleValue"] = 12345; //an example of reported state including more info than the desired state.
+            
+            root.printTo(println_buffer, sizeof(println_buffer));
+            Particle.publish("stateReport", println_buffer, 10, PRIVATE);
+            
+            EEPROM.put(EEPROM_CONTENT_ADDRESS, persistent_state_cache);
         }
-        root["exampleValue"] = 12345; //an example of reported state including more info than the desired state.
-
-        root.printTo(println_buffer, sizeof(println_buffer));
-        Particle.publish("stateReport", println_buffer, 10, PRIVATE);
-
-        EEPROM.put(EEPROM_CONTENT_ADDRESS, persistent_state_cache); //update persistent state
     }
     if ((wait_count > WAIT_FOR_AWS_IOT/WAIT_FOR_AWS_IOT_POLL_INTERVAL) || received_desired_state) {
         System.sleep(SLEEP_MODE_DEEP, persistent_state_cache.values[WAKEINTERVAL_OFFSET]);
@@ -88,11 +89,11 @@ void loop() {
 }
 
 void do_task() {
-    // replace the code below with the task your IOT device should perform
+    // replace the code below with the task your device should perform on a desired state change
     for (unsigned int i = 0; i <= (persistent_state_cache.values[RATE_OFFSET] * persistent_state_cache.values[DURATION_OFFSET] * 2); i+=1) {
-      if (i & 1) digitalWrite(ledD7, HIGH);
-      else digitalWrite(ledD7, LOW);
-      delay(500/persistent_state_cache.values[RATE_OFFSET]);
+        if (i & 1) digitalWrite(ledD7, HIGH);
+        else digitalWrite(ledD7, LOW);
+        delay(500/persistent_state_cache.values[RATE_OFFSET]);
     }
 }
 
@@ -103,17 +104,16 @@ int DesiredState(String state) {
     int return_code = 0;
     char value[15];
     char short_key[4] = {'\0'};
-
+    
     // convert String to character array for JSON library
     char * state_text_string = new char [state.length() + 1U];
     memcpy(state_text_string,
-       state.c_str(),
-       state.length());
-    state_text_string[state.length()] = '\0';  // Add the nul terminator
-
+           state.c_str(),
+           state.length());
+    state_text_string[state.length()] = '\0';  // Add the null terminator
+    
     JsonObject& root = jsonBuffer.parseObject(state_text_string);
-    if (!root.success())
-    {
+    if (!root.success()) {
         Particle.publish("ERROR: json_parsing_failed for: ", state_text_string, 10, PRIVATE);
         return_code = -99;
     } else {
@@ -122,13 +122,18 @@ int DesiredState(String state) {
             strncpy(short_key, DESIRED_STATE_ID_ARRAY[i], 3);
             if (root.containsKey(short_key)) {
                 int valueInt = root[short_key].as<int>();
-                sprintf(value, "%s: %d", short_key, valueInt);
-                // check the value is within the min/max range for the configuration parameter:
-                if ((valueInt < CONFIGURED_INTEGER_PARAMETER_MIN[i]) || (valueInt > CONFIGURED_INTEGER_PARAMETER_MAX[i])) return_code = -i; //out of range
-                else persistent_state_cache.values[i] = valueInt;
+                if (valueInt != persistent_state_cache.values[i]) {
+                    sprintf(value, "%s: %d", short_key, valueInt);
+                    if ((valueInt < CONFIGURED_INTEGER_PARAMETER_MIN[i]) || (valueInt > CONFIGURED_INTEGER_PARAMETER_MAX[i])) return_code = -i; //out of range
+                    else {
+                        //Particle.publish("DEBUG: value change in desiredState ", value, 10, PRIVATE);
+                        persistent_state_cache.values[i] = valueInt;
+                        desired_state_change = TRUE;
+                        if (i == BLINK_OFFSET) blink_state_change = TRUE;
+                    }
+                }
             }
         };
-        //Particle.publish(DESIRED_STATE_ID_ARRAY[i], value, 10, PRIVATE);
         if (return_code < 0) Particle.publish("DEBUG: illegal value in desiredState ", value, 10, PRIVATE);
         received_desired_state = TRUE;
     }
